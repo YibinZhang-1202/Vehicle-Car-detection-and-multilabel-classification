@@ -34,7 +34,7 @@ mpl.rcParams['font.sans-serif'] = ['SimHei']
 
 use_cuda = True  # True
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 device = torch.device(
     'cuda: 0' if torch.cuda.is_available() and use_cuda else 'cpu')
 
@@ -47,7 +47,7 @@ local_model_path = './checkpoints/epoch_39.pth'
 local_car_cfg_path = './car.cfg'
 local_car_det_weights_path = './car_detect.weights'
 
-
+BORDER = 300
 
 class Cls_Net(torch.nn.Module):
     """
@@ -244,7 +244,10 @@ class Car_DC():
 
         # initiate imgs_path
         self.imgs_path = [os.path.join(src_dir, x) for x in os.listdir(
-            src_dir) if x.endswith('.jpg')]
+            src_dir) if x.endswith('.jpg') or x.endswith('.png')]
+
+        # MODIFIED!
+        self.imgs_path = [os.path.join(src_dir, x) for x in os.listdir(src_dir)]
 
     def cls_draw_bbox(self, output, orig_img):
         """
@@ -257,6 +260,9 @@ class Car_DC():
 
         # 1
         for det in output:
+            if len(det) == 7:
+                continue
+
             # rectangle points
             pt_1 = tuple(det[1:3].int())  # the left-up point
             pt_2 = tuple(det[3:5].int())  # the right down point
@@ -267,9 +273,9 @@ class Car_DC():
             ROI = Image.fromarray(
                 orig_img[pt_1[1]: pt_2[1],
                          pt_1[0]: pt_2[0]][:, :, ::-1])
-            # ROI.show()
+            # # ROI.show()
 
-            # call classifier to predict
+            # # call classifier to predict
             car_color, car_direction, car_type = self.classifier.predict(ROI)
             label = str(car_color + ' ' + car_direction + ' ' + car_type)
             labels.append(label)
@@ -278,6 +284,9 @@ class Car_DC():
         # 2
         color = (0, 215, 255)
         for i, det in enumerate(output):
+            if len(det) == 7:
+                continue
+            
             pt_1 = pt_1s[i]
             pt_2 = pt_2s[i]
 
@@ -290,7 +299,7 @@ class Car_DC():
             # pt_2 = pt_1[0] + txt_size[0] + 3, pt_1[1] + txt_size[1] + 5
             pt_2 = pt_1[0] + txt_size[0] + 3, pt_1[1] - txt_size[1] - 5
 
-            # draw text background rect
+            # # draw text background rect
             cv2.rectangle(orig_img, pt_1, pt_2, color, thickness=-1)  # text
 
             # draw text
@@ -309,12 +318,15 @@ class Car_DC():
         """
         scaling_factor = min([inp_dim / float(x)
                               for x in orig_img_size])  # W, H scaling factor
+
         output = post_process(prediction,
                               prob_th,
                               num_cls,
                               nms=True,
                               nms_conf=nms_th,
                               CUDA=True)  # post-process such as nms
+
+        print('\n', output, '\na')
 
         if type(output) != int:
             output[:, [1, 3]] -= (inp_dim - scaling_factor *
@@ -327,6 +339,8 @@ class Car_DC():
                     output[i, [1, 3]], 0.0, orig_img_size[0])
                 output[i, [2, 4]] = torch.clamp(
                     output[i, [2, 4]], 0.0, orig_img_size[1])
+
+        print('\n', output, '\n')
         return output
 
     def detect_classify(self):
@@ -335,8 +349,11 @@ class Car_DC():
         """
         for x in self.imgs_path:
             # read image data
-            img = Image.open(x)
-            img2det = process_img(img, self.inp_dim)
+            img = cv2.imread(x)
+            img = cv2.copyMakeBorder(img, BORDER , BORDER, BORDER, BORDER, cv2.BORDER_CONSTANT, value=(100,100,100))
+            img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+          
+            img2det = process_img(img,  self.inp_dim)
             img2det = img2det.to(device)  # put image data to device
 
             # vehicle detection
@@ -354,10 +371,63 @@ class Car_DC():
             orig_img = cv2.cvtColor(np.asarray(
                 img), cv2.COLOR_RGB2BGR)  # RGB => BGR
             if type(output) != int:
+                print('\n', x)
                 self.cls_draw_bbox(output, orig_img)
                 dst_path = self.dst_dir + '/' + os.path.split(x)[1]
                 if not os.path.exists(dst_path):
                     cv2.imwrite(dst_path, orig_img)
+
+    # MODIFIED!
+    def detect_classify_modified(self):
+        """
+        detect and classify
+        """
+        # print(self.imgs_path)
+        for tracklet in self.imgs_path:
+            tracklet_camera_path = [os.path.join(tracklet, x) for x in os.listdir(tracklet)]
+
+            for tracklet_camera in tracklet_camera_path:
+                the_imgs_path = [os.path.join(tracklet_camera, x) for x in os.listdir(tracklet_camera) if x.endswith('.jpg')]
+                # print(the_imgs_path)
+                
+                for the_img in the_imgs_path:
+                    # print(the_img)
+                    # read image data
+                    img = cv2.imread(the_img)
+                    img = cv2.copyMakeBorder(img, BORDER , BORDER, BORDER, BORDER, cv2.BORDER_CONSTANT, value=(100,100,100))
+                    img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+
+                    img2det = process_img(img, self.inp_dim)
+                    img2det = img2det.to(device)  # put image data to device
+
+                    # vehicle detection
+                    prediction = self.detector.forward(img2det, CUDA=True)
+
+                    # calculating scaling factor
+                    orig_img_size = list(img.size)
+                    output = self.process_predict(prediction,
+                                                  self.prob_th,
+                                                  self.num_classes,
+                                                  self.nms_th,
+                                                  self.inp_dim,
+                                                  orig_img_size)
+
+                    orig_img = cv2.cvtColor(np.asarray(
+                        img), cv2.COLOR_RGB2BGR)  # RGB => BGR
+
+                    print(the_img)
+                    try:
+                        if type(output) != int:
+                            self.cls_draw_bbox(output, orig_img)
+                            print('\n', os.path.split(the_img)[0])
+                            dst_path = self.dst_dir + '/' + os.path.split(the_img)[0] + '/' + os.path.split(the_img)[1]
+                            print(dst_path)
+                            if not os.path.exists(dst_path):
+                                cv2.imwrite(dst_path, orig_img)
+                    except Exception as inst:
+                        img.show()
+                        print(inst)
+                        exit(2)
 
 # -----------------------------------------------------------
 

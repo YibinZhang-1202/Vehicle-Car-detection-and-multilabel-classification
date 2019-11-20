@@ -1,0 +1,5 @@
+checkpoints/
+env/
+image_test_deepreid/
+test_imgs/
+test_result/
